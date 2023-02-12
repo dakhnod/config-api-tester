@@ -5,6 +5,9 @@ import yaml
 import argparse
 import re
 
+class ComparisonException(RuntimeError):
+    pass
+
 class TestRunner():
     def __init__(self, config, variables={}) -> None:
         self.requests = config.get('requests', [])
@@ -18,8 +21,7 @@ class TestRunner():
 
                 try:
                     parent = self.find_item(match['inherit'])
-                    parent = parent.copy()
-                    parent.update(match)
+                    parent = parent | match
                     item = parent
                 except KeyError:
                     # has no parent
@@ -65,20 +67,27 @@ class TestRunner():
         method = request.get('method', 'GET')
         url = request['url']
         payload = request.get('payload')
-        headers_list = request.get('headers', [])
-        # headers = map(lambda header: (header['key'], header['value']), headers_list)
+        headers = request.get('headers', [])
+        headers = map(lambda header: (header['key'], header['value']), headers)
+        headers = dict(headers)
 
         response = requests.request(
             method=method,
             url=url,
             json=payload,
-            # headers=headers
+            headers=headers
         )
 
         result = {
             'http_code': response.status_code,
-            'text': response.text
+            'text': response.text,
+            'json': {}
         }
+
+        try:
+            result['json'] = response.json()
+        except:
+            pass
 
         return result
 
@@ -155,18 +164,15 @@ class TestRunner():
 
         response = self.send_request(request)
         
-        success = True
         expect = self.dict_get_replaced(test, 'expect', response, default={})
         # default value
         expect = {'http_code': 200} | expect
-        for key, value in expect.items():
-            if str(response[key]) != value:
-                success = False
-                self.print_label_fail(f'key {key} not matching (expected: {value}, actual: {response[key]})')
 
-        if success:
+        try:
+            self.compare_recursive(expect, response, 'expect')
             self.print_label_ok(f'Test {name}')
-        else:
+        except ComparisonException as e:
+            self.print_label_fail(e)
             self.print_label_fail(f'Test {name}')
 
         self.run_commands(self.dict_get_replaced(test, 'after', response))
@@ -179,6 +185,18 @@ class TestRunner():
                 self.run_test(test, name)
         except Exception as e:
             self.print_label_fail(f'Error running test "{name}": {e}')
+
+    def compare_recursive(self, expected, actual, path):
+        if type(expected) is dict:
+            for key in expected.keys():
+                try:
+                    self.compare_recursive(expected[key], actual[key], f'{path}.{key}')
+                except KeyError:
+                    raise ComparisonException(f'Value {path}.{key} not existant')
+            return        
+
+        if str(expected) != str(actual):
+            raise ComparisonException(f'Unfulfiled comparison at {path} (expected: {expected}, actual: {actual})')
 
 
 def main():
@@ -202,6 +220,7 @@ def main():
         config = yaml.load(file, Loader=yaml.FullLoader)
     
     runner = TestRunner(config, env)
+
     runner.run_all_tests()
 
 if __name__ == '__main__':

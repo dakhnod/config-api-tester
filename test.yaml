@@ -1,0 +1,14 @@
+---
+tests:
+  - name: "Setup"
+    before:
+      set:
+        - key: test
+          value: 123
+  - request:
+      url: "http://localhost:9999/{path}"
+      headers:
+        - key: Authorization
+          value: "Bearer {token}"
+    expect:
+      http_code: 404
